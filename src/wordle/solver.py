@@ -1,10 +1,11 @@
 import logging
 from collections import Counter
-
-import numpy as np
 from pathlib import Path
 
+import numpy as np
+
 logger = logging.getLogger(__name__)
+
 
 def load_words(words_file: Path, n_chars: int = 5) -> list[str]:
     """
@@ -60,7 +61,6 @@ def process_result(words: np.ndarray, guess: str, resp: str) -> np.ndarray:
     B, G, Y = b"B", b"G", b"Y"
 
     for char_byte in np.unique(guess_chars):
-
         guess_indices = np.where(guess_chars == char_byte)[0]
         char_resps = resp_chars[guess_indices]
 

@@ -16,13 +16,13 @@ dev = [
     "deptry>=0.23.1",
     "hatchling>=1.27.0",
     "isort>=7.0.0",
+    "pytest>=8.4.2",
 ]
+
+[project.scripts]
+wordle-solver = "wordle.main:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-[tool.hatch.build]
-include = [
-    "src/wordle/words.txt"
-]
