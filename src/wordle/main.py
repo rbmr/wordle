@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import Optional
 
+import numpy as np
 import typer
 from rich.console import Console
 from rich.logging import RichHandler
@@ -10,8 +11,8 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.text import Text
 
-from wordle.solver import (get_word, load_words, pick_best_word,
-                           process_result, words_to_arr)
+from wordle.solver import (to_str, load_words, process_result, words_to_arr)
+from wordle.pick import pick_best_word, pick_letter_freq, pick_min_remaining
 
 logger = logging.getLogger(__name__)
 
@@ -147,7 +148,7 @@ def main(
         # Display the remaining words
         max_words = 128
         display_words = min(n_remaining, max_words)
-        decoded_words = [get_word(words_arr, i) for i in range(display_words)]
+        decoded_words = [to_str(words_arr[i, :]) for i in range(display_words)]
 
         words_text = Text(", ").join(Text(w, style="dim") for w in decoded_words)
         if n_remaining > max_words:
@@ -157,11 +158,12 @@ def main(
         console.print(words_text)
 
         # Suggest a word
-        best_idx = pick_best_word(words_arr)
-        if best_idx == -1:
-            console.print("[bold]Error: Could not pick a best word.[/bold]")
-            break
-        suggested_word = get_word(words_arr, best_idx)
+        suggested_arr = pick_best_word(
+            strategy=pick_min_remaining,
+            candidates=words_arr,
+            guesses=None,
+        )
+        suggested_word = to_str(suggested_arr)
         console.print(
             Panel(
                 f"[bold]{suggested_word}[/bold]",
@@ -186,7 +188,9 @@ def main(
 
         # Otherwise, filter and loop.
         try:
-            words_arr = process_result(words_arr, guess, resp)
+            guess_arr = np.array(list(guess), dtype="S1")
+            resp_arr = np.array(list(resp), dtype="S1")
+            words_arr = process_result(words_arr, guess_arr, resp_arr)
         except Exception as e:
             console.print(f"An internal error occurred: {e}", style="bold")
             logger.error("Error during process_result", exc_info=True)

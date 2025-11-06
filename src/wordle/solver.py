@@ -1,11 +1,11 @@
 import logging
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
+B, G, Y = b"B", b"G", b"Y"
 
 def load_words(words_file: Path, n_chars: int = 5) -> list[str]:
     """
@@ -34,17 +34,18 @@ def load_words(words_file: Path, n_chars: int = 5) -> list[str]:
     logger.info(f"Successfully loaded {len(valid_words)} from {words_file}")
     return sorted(valid_words)
 
-
 def words_to_arr(words: list[str]) -> np.ndarray:
+    """Converts a list of equal length python strings to a numpy array."""
     assert len(words) > 0
     word_len = len(words[0])
-    assert word_len > 0
     assert all(len(word) == word_len for word in words)
     char_array = np.array([list(word) for word in words], dtype="S1")
     return char_array
 
+def to_str(word: np.ndarray) -> str:
+    return word.tobytes().decode("utf-8")
 
-def process_result(words: np.ndarray, guess: str, resp: str) -> np.ndarray:
+def process_result(words: np.ndarray, guess: np.ndarray, resp: np.ndarray) -> np.ndarray:
     """
     Processes responses to a guess by filtering the words list using NumPy.
 
@@ -52,17 +53,15 @@ def process_result(words: np.ndarray, guess: str, resp: str) -> np.ndarray:
     'guess' is the guessed word (e.g., "arise").
     'resp' is the Wordle response (e.g., "BYYGB").
     """
-    assert set(resp).issubset({"B", "G", "Y"})
-    assert len(resp) == len(guess) == words.shape[1]
+    assert set(resp).issubset({B, G, Y})
+    assert guess.ndim == resp.ndim == 1
+    assert guess.shape[0] == resp.shape[0] == words.shape[1]
 
     mask = np.ones(len(words), dtype=bool)
-    guess_chars = np.array(list(guess), dtype="S1")
-    resp_chars = np.array(list(resp), dtype="S1")
-    B, G, Y = b"B", b"G", b"Y"
 
-    for char_byte in np.unique(guess_chars):
-        guess_indices = np.where(guess_chars == char_byte)[0]
-        char_resps = resp_chars[guess_indices]
+    for char_byte in np.unique(guess):
+        guess_indices = np.where(guess == char_byte)[0]
+        char_resps = resp[guess_indices]
 
         # Handle Greens
         green_indices = guess_indices[char_resps == G]
@@ -95,83 +94,103 @@ def process_result(words: np.ndarray, guess: str, resp: str) -> np.ndarray:
 
     return words[mask]
 
-
-def get_word(words: np.ndarray, i: int) -> str:
-    word_arr = words[i, :]
-    return word_arr.tobytes().decode("utf-8")
-
-
-def pick_best_word(words: np.ndarray) -> int:
+def get_indices(arr: np.ndarray) -> np.ndarray:
     """
-    Picks the word from the remaining list that contains the most
-    frequent *unique* letters from that same list.
+    Converts a NumPy array of bytes ('S1') to a NumPy array
+    of uint indices (0-25).
     """
-    n_samples, n_chars = words.shape
-    if n_samples == 0:
-        logger.warning("No words remaining to pick from!")
-        return -1  # Return a sentinel value
-    if n_samples == 1:
-        logger.info("Only one word remaining, picking index 0.")
-        return 0  # Only one choice
-
-    words_uint8 = words.view(np.uint8)
-    assert np.all(
-        (words_uint8 >= 65) & (words_uint8 <= 90)
-    ), "Words contain non-uppercase A-Z characters!"
+    # .view(np.uint8) is a zero-copy operation, very fast
+    uint_arr = arr.view(np.uint8)
+    assert np.all((uint_arr >= 65) & (uint_arr <= 90))
 
     # Convert ASCII (65-90) to indices (0-25)
-    words_idx = words_uint8 - 65
+    return uint_arr - 65
 
-    # Calculate frequency of all letters
-    letter_frequencies = np.bincount(words_idx.flatten(), minlength=26)
+def get_counts_1dim(indices_arr: np.ndarray) -> np.ndarray:
+    """
+    Calculates letter counts (0-25) from a 1d array of indices.
+    """
+    assert indices_arr.ndim == 1
+    assert np.all((indices_arr >= 0) & (indices_arr <= 25)), \
+        "Indices are not in the expected [0, 25] range"
+    return np.bincount(indices_arr, minlength=26)
 
-    # Sort letters within each word (row-wise)
-    sorted_words_idx = np.sort(words_idx, axis=1)
-    unique_mask = np.full(sorted_words_idx.shape, True, dtype=bool)
-    unique_mask[:, 1:] = sorted_words_idx[:, 1:] != sorted_words_idx[:, :-1]
+def get_counts_2dim(indices_arr: np.ndarray) -> np.ndarray:
+    """
+    Calculates letter counts (0-25) from a 2d array of indices.
+    """
+    assert indices_arr.ndim == 2
+    assert np.all((indices_arr >= 0) & (indices_arr <= 25)), \
+        "Indices are not in the expected [0, 25] range"
 
-    # Get the frequency score for each letter
-    sorted_word_scores = letter_frequencies[sorted_words_idx]
+    N, k = indices_arr.shape
+    assert k < 256
+    counts_arr = np.zeros((N, 26), dtype=np.uint8)
+    row_indices = np.arange(N)[:, None]  # Shape (N, 1)
 
-    # Zero out scores for duplicate letters, then sum
-    final_scores = np.sum(sorted_word_scores * unique_mask, axis=1)
+    # Broadcasts row_indices to (N, k) and increments
+    # counts_arr[r, c] for each (r, c) pair.
+    np.add.at(counts_arr, (row_indices, indices_arr), 1)
+    return counts_arr
 
-    # Return the best index
-    return np.argmax(final_scores)
+def get_all_resp(
+        candidates: np.ndarray,
+        candidates_idx: np.ndarray,
+        true_counts_all: np.ndarray,
+        guess: np.ndarray,
+) -> np.ndarray:
 
+    # Precompute relevant values
+    N, k = candidates.shape
+    true_counts = true_counts_all.copy()
+    guess_idx = get_indices(guess)
 
-def get_resp(true: str, guess: str) -> str:
+    # Set blacks
+    full_resp = np.full((N, k), B, dtype="S1")
+
+    # Set greens
+    green_mask = candidates == guess
+    full_resp[green_mask] = G
+
+    # Decrement counts for the green letters
+    green_counts_to_sub = np.zeros_like(true_counts_all)
+    green_rows, green_cols = np.where(green_mask)
+    green_letter_indices = candidates_idx[green_rows, green_cols]
+    np.add.at(green_counts_to_sub, (green_rows, green_letter_indices), 1)
+    true_counts -= green_counts_to_sub
+
+    # Yellow pass
+    for i in range(k):
+        letter_idx = guess_idx[i]
+
+        # Find words that are NOT green at this position
+        not_green_mask = ~green_mask[:, i]  # (N,)
+
+        # Find words that HAVE this letter still available
+        has_letter_mask = true_counts[:, letter_idx] > 0  # (N,)
+
+        # Combine: Can be yellow if not green AND letter is available
+        yellow_mask = not_green_mask & has_letter_mask  # (N,)
+
+        # Set those positions to Yellow
+        full_resp[yellow_mask, i] = Y
+
+        # And decrement the count *only for those words*
+        true_counts[yellow_mask, letter_idx] -= 1
+
+    return full_resp
+
+def get_resp(true: np.ndarray, guess: np.ndarray) -> np.ndarray:
     """
     Generates a Wordle response given a true word and a guess.
     """
-    true = true.upper()
-    guess = guess.upper()
-    n_chars = len(true)
+    n_chars = true.shape[0]
+    assert guess.shape[0] == n_chars
 
-    assert len(guess) == n_chars, "Guess and true word must be the same length."
-
-    # Initialize response as all 'B' (Black)
-    resp = ["B"] * n_chars
-
-    # Use Counter to track available letters in the true word.
-    true_counts = Counter(true)
-
-    # Greens take priority and "use up" a letter
-    for i in range(n_chars):
-        if guess[i] == true[i]:
-            resp[i] = "G"
-            true_counts[guess[i]] -= 1
-
-    # Yellows can only use remaining, non-Green letters
-    for i in range(n_chars):
-        # Skip if it's already Green
-        if resp[i] == "G":
-            continue
-
-        # Check if the guess letter is in the true word
-        # and if we still have any of that letter available
-        if guess[i] in true_counts and true_counts[guess[i]] > 0:
-            resp[i] = "Y"
-            true_counts[guess[i]] -= 1
-
-    return "".join(resp)
+    # Promote 1D inputs to a 2D batch of size N=1
+    candidates = true[None, :] # (k,) -> (1, k)
+    candidates_idx = get_indices(candidates) # (1, k)
+    true_counts_all = get_counts_2dim(candidates_idx) # (1, 26)
+    all_resps = get_all_resp(candidates, candidates_idx,
+                             true_counts_all, guess) # (1, k)
+    return all_resps[0, :] # (1, k) -> (k,)
