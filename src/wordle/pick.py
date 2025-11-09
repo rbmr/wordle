@@ -1,18 +1,19 @@
-from typing import Optional, Callable, Counter
+import logging
+from typing import Callable, Optional
 
 import numpy as np
-import logging
 
-from wordle.solver import get_resp, get_indices, get_all_resp, get_counts_2dim, get_counts_1dim
+from wordle.solver import get_all_resp, get_counts_1dim, get_counts_2dim, get_indices
 
 logger = logging.getLogger(__name__)
 
 Strategy = Callable[[np.ndarray, np.ndarray], np.ndarray]
 
+
 def pick_best_word(
-        strategy: Strategy,
-        candidates: np.ndarray,
-        guesses: Optional[np.ndarray] = None,
+    strategy: Strategy,
+    candidates: np.ndarray,
+    guesses: Optional[np.ndarray] = None,
 ) -> np.ndarray:
     """
     Selects the best word to guess using a provided strategy function.
@@ -33,10 +34,7 @@ def pick_best_word(
     return strategy(candidates, guesses)
 
 
-def pick_letter_freq(
-        candidates: np.ndarray,
-        guesses: np.ndarray
-) -> np.ndarray:
+def pick_letter_freq(candidates: np.ndarray, guesses: np.ndarray) -> np.ndarray:
     """
     Picks the word from `guesses` that contains the most
     frequent *unique* letters from the `candidates` list.
@@ -66,10 +64,8 @@ def pick_letter_freq(
 
     return guesses[best_idx, :]
 
-def pick_min_remaining(
-        candidates: np.ndarray,
-        guesses: np.ndarray
-) -> np.ndarray:
+
+def pick_min_remaining(candidates: np.ndarray, guesses: np.ndarray) -> np.ndarray:
     """
     Picks the word from `guess_list` that minimizes the expected size
     of the `candidates` list for the next turn.
@@ -80,7 +76,7 @@ def pick_min_remaining(
     assert n_candidates > 0
     assert n_guesses > 0
 
-    min_score = float('inf')
+    min_score = float("inf")
     best_guess = None  # Will be overwritten
 
     # Cache relevant matrices
@@ -94,12 +90,7 @@ def pick_min_remaining(
 
         # Call the new vectorized function
         # This one call replaces the entire inner Python loop
-        all_resps = get_all_resp(
-            candidates,
-            candidates_idx,
-            true_counts_all,
-            guess_arr
-        )
+        all_resps = get_all_resp(candidates, candidates_idx, true_counts_all, guess_arr)
 
         # Now we have an (N, k) array of responses. We need to
         # find the counts of each unique response row.
@@ -115,7 +106,7 @@ def pick_min_remaining(
         _, counts = np.unique(void_view.ravel(), return_counts=True)
 
         # Calculate the score from the partition sizes (counts)
-        current_score = np.sum(counts ** 2)
+        current_score = np.sum(counts**2)
 
         # Lower score is better
         if current_score < min_score:

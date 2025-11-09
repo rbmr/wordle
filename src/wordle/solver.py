@@ -1,11 +1,31 @@
+import importlib
 import logging
 from pathlib import Path
+from typing import List
 
 import numpy as np
 
 logger = logging.getLogger(__name__)
 
 B, G, Y = b"B", b"G", b"Y"
+
+
+def load_default_words(filename: str, n_chars: int = 5) -> List[str]:
+    """
+    Loads a default word list from the package data using importlib.resources.
+    """
+    logger.info(f"Loading default word list: {filename}")
+    try:
+        default_file = importlib.resources.files("wordle").joinpath("words", filename)
+        with importlib.resources.as_file(default_file) as file_path:
+            return load_words(file_path, n_chars=n_chars)
+    except FileNotFoundError:
+        logger.error(f"Error: Default '{filename}' not found within the package.")
+        return []
+    except Exception as e:
+        logger.error(f"An error occurred loading '{filename}': {e}", exc_info=True)
+        return []
+
 
 def load_words(words_file: Path, n_chars: int = 5) -> list[str]:
     """
@@ -34,6 +54,7 @@ def load_words(words_file: Path, n_chars: int = 5) -> list[str]:
     logger.info(f"Successfully loaded {len(valid_words)} from {words_file}")
     return sorted(valid_words)
 
+
 def words_to_arr(words: list[str]) -> np.ndarray:
     """Converts a list of equal length python strings to a numpy array."""
     assert len(words) > 0
@@ -42,10 +63,14 @@ def words_to_arr(words: list[str]) -> np.ndarray:
     char_array = np.array([list(word) for word in words], dtype="S1")
     return char_array
 
+
 def to_str(word: np.ndarray) -> str:
     return word.tobytes().decode("utf-8")
 
-def process_result(words: np.ndarray, guess: np.ndarray, resp: np.ndarray) -> np.ndarray:
+
+def process_result(
+    words: np.ndarray, guess: np.ndarray, resp: np.ndarray
+) -> np.ndarray:
     """
     Processes responses to a guess by filtering the words list using NumPy.
 
@@ -94,6 +119,7 @@ def process_result(words: np.ndarray, guess: np.ndarray, resp: np.ndarray) -> np
 
     return words[mask]
 
+
 def get_indices(arr: np.ndarray) -> np.ndarray:
     """
     Converts a NumPy array of bytes ('S1') to a NumPy array
@@ -106,22 +132,26 @@ def get_indices(arr: np.ndarray) -> np.ndarray:
     # Convert ASCII (65-90) to indices (0-25)
     return uint_arr - 65
 
+
 def get_counts_1dim(indices_arr: np.ndarray) -> np.ndarray:
     """
     Calculates letter counts (0-25) from a 1d array of indices.
     """
     assert indices_arr.ndim == 1
-    assert np.all((indices_arr >= 0) & (indices_arr <= 25)), \
-        "Indices are not in the expected [0, 25] range"
+    assert np.all(
+        (indices_arr >= 0) & (indices_arr <= 25)
+    ), "Indices are not in the expected [0, 25] range"
     return np.bincount(indices_arr, minlength=26)
+
 
 def get_counts_2dim(indices_arr: np.ndarray) -> np.ndarray:
     """
     Calculates letter counts (0-25) from a 2d array of indices.
     """
     assert indices_arr.ndim == 2
-    assert np.all((indices_arr >= 0) & (indices_arr <= 25)), \
-        "Indices are not in the expected [0, 25] range"
+    assert np.all(
+        (indices_arr >= 0) & (indices_arr <= 25)
+    ), "Indices are not in the expected [0, 25] range"
 
     N, k = indices_arr.shape
     assert k < 256
@@ -133,11 +163,12 @@ def get_counts_2dim(indices_arr: np.ndarray) -> np.ndarray:
     np.add.at(counts_arr, (row_indices, indices_arr), 1)
     return counts_arr
 
+
 def get_all_resp(
-        candidates: np.ndarray,
-        candidates_idx: np.ndarray,
-        true_counts_all: np.ndarray,
-        guess: np.ndarray,
+    candidates: np.ndarray,
+    candidates_idx: np.ndarray,
+    true_counts_all: np.ndarray,
+    guess: np.ndarray,
 ) -> np.ndarray:
 
     # Precompute relevant values
@@ -180,6 +211,7 @@ def get_all_resp(
 
     return full_resp
 
+
 def get_resp(true: np.ndarray, guess: np.ndarray) -> np.ndarray:
     """
     Generates a Wordle response given a true word and a guess.
@@ -188,9 +220,10 @@ def get_resp(true: np.ndarray, guess: np.ndarray) -> np.ndarray:
     assert guess.shape[0] == n_chars
 
     # Promote 1D inputs to a 2D batch of size N=1
-    candidates = true[None, :] # (k,) -> (1, k)
-    candidates_idx = get_indices(candidates) # (1, k)
-    true_counts_all = get_counts_2dim(candidates_idx) # (1, 26)
-    all_resps = get_all_resp(candidates, candidates_idx,
-                             true_counts_all, guess) # (1, k)
-    return all_resps[0, :] # (1, k) -> (k,)
+    candidates = true[None, :]  # (k,) -> (1, k)
+    candidates_idx = get_indices(candidates)  # (1, k)
+    true_counts_all = get_counts_2dim(candidates_idx)  # (1, 26)
+    all_resps = get_all_resp(
+        candidates, candidates_idx, true_counts_all, guess
+    )  # (1, k)
+    return all_resps[0, :]  # (1, k) -> (k,)

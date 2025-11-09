@@ -11,8 +11,14 @@ from rich.panel import Panel
 from rich.prompt import Prompt
 from rich.text import Text
 
-from wordle.solver import (to_str, load_words, process_result, words_to_arr)
-from wordle.pick import pick_best_word, pick_letter_freq, pick_min_remaining
+from wordle.pick import pick_best_word, pick_min_remaining
+from wordle.solver import (
+    load_default_words,
+    load_words,
+    process_result,
+    to_str,
+    words_to_arr,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +34,7 @@ console = Console()
 
 
 def get_guess(suggested_word: str, n_chars: int = 5) -> Optional[str]:
+    """Get a valid guess from the user"""
     while True:
         guess = (
             Prompt.ask(
@@ -57,6 +64,7 @@ def get_guess(suggested_word: str, n_chars: int = 5) -> Optional[str]:
 
 
 def get_response(n_chars: int = 5) -> str | None:
+    """Get a valid wordle response from the user"""
     # Create a styled prompt
     prompt_text = Text()
     prompt_text.append("\nEnter the response:\n")
@@ -91,64 +99,87 @@ def get_response(n_chars: int = 5) -> str | None:
         return resp
 
 
-def get_words_list(words_file: Optional[Path] = None, n_chars: int = 5) -> list[str]:
-    if words_file is None:
-        console.print("Using default word list.")
-        try:
-            # Use importlib.resources to get a path to the file
-            default_words_file = importlib.resources.files("wordle").joinpath(
-                "words.txt"
-            )
-            with importlib.resources.as_file(default_words_file) as words_file_path:
-                return load_words(words_file_path, n_chars=n_chars)
-        except FileNotFoundError:
-            console.print(
-                "Error: Default 'words.txt' not found within the package.", style="bold"
-            )
-            raise typer.Exit(code=1)
-    else:
-        console.print(f"Using custom word list from: [dim]{words_file}[/dim]")
-        return load_words(words_file, n_chars=n_chars)
-
-
 @app.command()
 def main(
-    words_file: Path = typer.Argument(
+    candidates_file: Optional[Path] = typer.Argument(
         None,
         exists=True,
         file_okay=True,
         dir_okay=False,
         readable=True,
-        help="Path to a custom word list file. If not provided, uses a default list.",
+        help="Path to a custom candidate (answer) list file.",
+    ),
+    guesses_file: Optional[Path] = typer.Argument(
+        None,
+        exists=True,
+        file_okay=True,
+        dir_okay=False,
+        readable=True,
+        help="Path to a custom *full* list of valid guesses.",
     ),
 ):
     """
     Runs the command-line Wordle solver.
     """
-    words_list = get_words_list(words_file, n_chars=5)
-    if not words_list:
-        console.print("No words loaded. Exiting.", style="bold")
+    # Load candidates
+    if candidates_file is not None:
+        if not candidates_file.is_file():
+            raise ValueError("Candidate file does not exist.")
+        console.print(f"Using custom candidate list: [dim]{candidates_file}[/dim]")
+        candidates_list = load_words(candidates_file, n_chars=5)
+    else:
+        console.print(f"Using default candidate list.")
+        candidates_list = load_default_words("candidates.txt", n_chars=5)
+
+    # Load valid words
+    if guesses_file is not None:
+        if not guesses_file.is_file():
+            raise ValueError("Valid words file does not exist.")
+        console.print(f"Using custom valid guesses list: [dim]{guesses_file}[/dim]")
+        guesses_list = load_words(guesses_file, n_chars=5)
+    else:
+        console.print(f"Using default valid guesses list.")
+        guesses_list = load_default_words("guesses.txt", n_chars=5)
+
+    # Ensure all candidates may be guessed
+    candidates_set = set(candidates_list)
+    guesses_set = set(guesses_list)
+    missing_words = candidates_set.difference(guesses_set)
+    if missing_words:
+        console.print(
+            f"Adding {len(missing_words)} missing candidates to list of valid guesses."
+        )
+        guesses_list.extend(missing_words)
+
+    # Ensure candidates exist.
+    if not candidates_list:
+        console.print("No candidates exist. Exiting.", style="bold")
         raise typer.Exit(code=1)
 
-    words_arr = words_to_arr(words_list)
-    n_chars = words_arr.shape[1]
+    # Convert to NumPy
+    candidates_arr = words_to_arr(candidates_list)
+    guesses_arr = words_to_arr(guesses_list)
+    n_chars = candidates_arr.shape[1]
     GREEN_WIN = "G" * n_chars
 
     console.print(
-        f"Starting Wordle Solver CLI (Loaded {len(words_list)} words)", style="bold"
+        f"Starting Wordle Solver CLI (Loaded {len(candidates_list)} candidates, "
+        f"{len(guesses_list)} valid guesses)",
+        style="bold",
     )
     while True:
-        n_remaining = len(words_arr)
+
+        # Determine number of candidates remaining
+        n_remaining = len(candidates_arr)
         if n_remaining == 0:
             console.print("\n[bold]No possible words match the given clues.[/bold]")
             break
-
         console.print(f"\n[bold]{n_remaining}[/bold] possible words remaining")
 
         # Display the remaining words
         max_words = 128
         display_words = min(n_remaining, max_words)
-        decoded_words = [to_str(words_arr[i, :]) for i in range(display_words)]
+        decoded_words = [to_str(candidates_arr[i, :]) for i in range(display_words)]
 
         words_text = Text(", ").join(Text(w, style="dim") for w in decoded_words)
         if n_remaining > max_words:
@@ -157,11 +188,11 @@ def main(
             )
         console.print(words_text)
 
-        # Suggest a word
+        # Suggest a word to guess
         suggested_arr = pick_best_word(
             strategy=pick_min_remaining,
-            candidates=words_arr,
-            guesses=None,
+            candidates=candidates_arr,
+            guesses=guesses_arr,
         )
         suggested_word = to_str(suggested_arr)
         console.print(
@@ -190,7 +221,7 @@ def main(
         try:
             guess_arr = np.array(list(guess), dtype="S1")
             resp_arr = np.array(list(resp), dtype="S1")
-            words_arr = process_result(words_arr, guess_arr, resp_arr)
+            candidates_arr = process_result(candidates_arr, guess_arr, resp_arr)
         except Exception as e:
             console.print(f"An internal error occurred: {e}", style="bold")
             logger.error("Error during process_result", exc_info=True)
