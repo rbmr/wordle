@@ -1,8 +1,9 @@
+from __future__ import annotations
 import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 from matplotlib import pyplot as plt
@@ -13,7 +14,6 @@ from wordle.pick import Strategy, pick_best_word, pick_letter_freq, pick_min_rem
 from wordle.solver import (
     get_resp,
     load_default_words,
-    load_words,
     process_result,
     to_str,
     words_to_arr,
@@ -37,32 +37,25 @@ class EvalResult(BaseModel):
 
     strategy_name: str
     n_candidates: int
-    n_total_guesses: int
+    n_guesses: int
+    words_hash: str
     first_guess: str
     stats: RunStats
     distribution_counts: List[int]
     guesses_per_word: Dict[str, int]
 
+    def get_dir_name(self):
+        return f"{self.strategy_name}_{self.n_candidates}_{self.n_guesses}_{self.words_hash}"
 
 def _solve_game(
     all_candidates: np.ndarray,
-    all_guesses: np.ndarray,
+    all_guesses: Optional[np.ndarray],
     first_guess_arr: np.ndarray,
     true_word_arr: np.ndarray,
     strategy: Strategy,
 ) -> int:
     """
     Simulates a single game for one true word and returns the guess count.
-
-    Args:
-        true_word_arr: (k,) array. The secret answer to find.
-        all_candidates: (N, k) array. The full list of possible answers.
-        all_guesses: (M, k) array. The full list of allowed guesses.
-        strategy: The strategy function to use.
-        first_guess_arr: (k,) array. The pre-computed first guess to use.
-
-    Returns:
-        The number of guesses it took to find the true word.
     """
     n_guesses = 1
     guess_arr = first_guess_arr
@@ -86,22 +79,23 @@ def _solve_game(
 
 
 def evaluate_strategy(
-    all_candidates: np.ndarray,
-    all_guesses: np.ndarray,
+    candidates_arr: np.ndarray,
+    guesses_arr: Optional[np.ndarray],
     strategy: Strategy,
 ) -> EvalResult:
     """
     Evaluates a strategy by simulating a game for every word in the list of candidates.
     """
     # Setup
-    logger.info(f"Evaluating {strategy.__name__}")
-    n_candidates = all_candidates.shape[0]
-    n_total_guesses = all_guesses.shape[0]
+    strategy_name = strategy.__name__
+    n_candidates = candidates_arr.shape[0]
+    n_total_guesses = guesses_arr.shape[0] if guesses_arr is not None else -1
+    logger.info(f"Evaluating {strategy_name}")
 
     # Get the first guess
     logger.info("Calculating first guess...")
     start_time_first_guess = time.perf_counter()
-    first_guess_arr = pick_best_word(strategy, all_candidates, all_guesses)
+    first_guess_arr = pick_best_word(strategy, candidates_arr, guesses_arr)
     end_time_first_guess = time.perf_counter()
     first_guess_time_s = end_time_first_guess - start_time_first_guess
     first_guess_str = to_str(first_guess_arr)
@@ -115,13 +109,13 @@ def evaluate_strategy(
     total_sim_start_time = time.perf_counter()
 
     for i in range(n_candidates):
-        true_word_arr = all_candidates[i, :]
+        true_word_arr = candidates_arr[i, :]
         true_word_str = to_str(true_word_arr)
 
         game_start_time = time.perf_counter()
         cost = _solve_game(
-            all_candidates,
-            all_guesses,
+            candidates_arr,
+            guesses_arr,
             first_guess_arr,
             true_word_arr,
             strategy,
@@ -151,34 +145,53 @@ def evaluate_strategy(
     )
 
     results_model = EvalResult(
-        strategy_name=strategy.__name__,
+        strategy_name=strategy_name,
         n_candidates=n_candidates,
-        n_total_guesses=n_total_guesses,
+        n_guesses=n_total_guesses,
         first_guess=first_guess_str,
         stats=stats_model,
         distribution_counts=np.bincount(counts_arr).tolist(),
         guesses_per_word=guesses_per_word,
+        words_hash=get_words_hash(candidates_arr, guesses_arr)
     )
 
     return results_model
 
+def _hash_s1_array(arr: Optional[np.ndarray], hasher: hashlib._Hash):
+    """
+    Hashes a 2D 'S1' array, invariant to row order (axis 0).
+    """
+    if arr is None:
+        return
 
-def get_words_hash(candidates_list: List[str], guesses_list: List[str]) -> str:
+    assert arr.ndim == 2, f"arr must have ndim '2', but got {arr.ndim}"
+    assert arr.dtype == 'S1', f"arr must have dtype 'S1', but got {arr.dtype}"
+
+    num_rows, num_cols = arr.shape
+    if num_rows == 0 or num_cols == 0:
+        return
+
+    # View the (N, M) 'S1' array as a 1D (N,) 'SM' array.
+    row_words = arr.view(f'S{num_cols}').squeeze(axis=1)
+
+    # Sort the 1D array of "words".
+    sorted_words = np.sort(row_words)
+
+    # Update the hash
+    hasher.update(sorted_words.tobytes())
+
+def get_words_hash(candidates_arr: np.ndarray, guesses_arr: Optional[np.ndarray]) -> str:
     """Creates a unique hash for the combination of two word lists."""
-    candidates_str = ",".join(sorted(candidates_list))
-    guesses_str = ",".join(sorted(guesses_list))
-
-    hasher = hashlib.sha256()
-    hasher.update(candidates_str.encode("utf-8"))
-    hasher.update(guesses_str.encode("utf-8"))
-
+    hasher: hashlib = hashlib.sha256()
+    _hash_s1_array(candidates_arr, hasher)
+    hasher.update(b'---ARRAY_SEPARATOR---')
+    _hash_s1_array(guesses_arr, hasher)
     return hasher.hexdigest()[:12]
-
 
 def get_dir_name(
     strategy_name: str, n_candidates: int, n_guesses: int, words_hash: str
 ) -> str:
-    return f"{strategy_name}_{n_candidates}_{n_guesses}_{words_hash}"
+    return
 
 
 def save_results_json(results_data: EvalResult, output_file: Path):
@@ -220,17 +233,17 @@ def create_shareable_image(results_data: EvalResult, output_file: Path):
         [
             ["---", "---"],
             ["Total Candidates", f"{n_candidates:,}"],
-            ["Total Guesses", f"{results_data.n_total_guesses:,}"],
+            ["Total Guesses", f"{results_data.n_guesses:,}"],
             ["Mean Guesses", f"{stats.mean_guesses:.4f}"],
             ["Guess Variance", f"{stats.variance_guesses:.4f}"],
             ["---", "---"],
             ["First Guess Time", f"{stats.first_guess_time_s:.2f} s"],
-            ["Avg. GameTime", f"{stats.avg_game_time_s:.4f} s"],  # Renamed for space
+            ["Avg. GameTime", f"{stats.avg_game_time_s:.4f} s"],
             ["Total Sim Time", f"{stats.total_sim_time_s:.2f} s"],
         ]
     )
 
-    # --- Plotting (Unchanged from here) ---
+    # Plotting
     fig = plt.figure(figsize=(14, 7), constrained_layout=True)
     gs = fig.add_gridspec(1, 2, width_ratios=[1.2, 1])
 
@@ -278,22 +291,19 @@ def create_shareable_image(results_data: EvalResult, output_file: Path):
 
 
 def main():
-    # Set up basic logging to see progress
+    # Set up basic logging
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
         datefmt="[%X]",
     )
 
-    # Load the default word list (similar to main.py)
+    # Load the default word list
     logger.info("Loading default word list...")
-    try:
-        candidates_list = load_default_words("candidates.txt", n_chars=5)
-        guesses_list = load_default_words("guesses.txt", n_chars=5)
-    except Exception as e:
-        logger.error(f"Failed to load default word lists: {e}", exc_info=True)
-        return
+    candidates_list = load_default_words("candidates.txt", n_chars=5)
+    guesses_list = load_default_words("guesses.txt", n_chars=5)
 
+    # Handle missing words
     candidates_set = set(candidates_list)
     guesses_set = set(guesses_list)
     missing_words = candidates_set.difference(guesses_set)
@@ -314,27 +324,22 @@ def main():
     n_guesses = all_guesses_arr.shape[0]
     logger.info(f"Loaded {n_candidates} candidates and {n_guesses} valid guesses.")
 
-    # Get unique hash
-    words_hash = get_words_hash(candidates_list, guesses_list)
-
-    # Define strategies
-    strategies_to_run = [
-        pick_letter_freq,
-        pick_min_remaining,
+    # Define scenarios to run: (strategy, all_guesses)
+    scenarios_to_run = [
+        (pick_min_remaining, None),
+        (pick_letter_freq, None),
+        (pick_letter_freq, all_guesses_arr),
+        (pick_min_remaining, all_guesses_arr),
     ]
 
-    # Evaluate each strategy
-    for strategy in strategies_to_run:
+    # Evaluate each scenario
+    for strategy, guesses_arr in scenarios_to_run:
 
         # Generate results
-        results = evaluate_strategy(all_candidates_arr, all_guesses_arr, strategy)
+        results = evaluate_strategy(all_candidates_arr, guesses_arr, strategy)
 
         # Save results
-        strategy_name = strategy.__name__
-        output_dir_name = get_dir_name(
-            strategy_name, n_candidates, n_guesses, words_hash
-        )
-        output_dir = Path(__file__).parent / "eval" / output_dir_name
+        output_dir = Path(__file__).parent / "eval" / results.get_dir_name()
         save_results_json(results, output_dir / "results.json")
         create_shareable_image(results, output_dir / "share.png")
 

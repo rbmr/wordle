@@ -1,12 +1,13 @@
 {
   "strategy_name": "pick_letter_freq",
   "n_candidates": 2340,
-  "n_total_guesses": 14855,
+  "n_guesses": 14855,
+  "words_hash": "febe0ac6e5d5",
   "first_guess": "OATER",
   "stats": {
-    "first_guess_time_s": 0.0019196570000303836,
-    "total_sim_time_s": 5.108586376000062,
-    "avg_game_time_s": 0.002181316265386193,
+    "first_guess_time_s": 0.0023898910003481433,
+    "total_sim_time_s": 9.281381392000185,
+    "avg_game_time_s": 0.003962041916222208,
     "mean_guesses": 3.9764957264957266,
     "variance_guesses": 0.8528663525458396
   },
