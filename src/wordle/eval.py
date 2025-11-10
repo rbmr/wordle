@@ -3,12 +3,13 @@ import hashlib
 import logging
 import time
 from pathlib import Path
-from typing import Dict, List, Optional
-
+from typing import Dict, List, Optional, Tuple
+import multiprocessing as mp
 import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.ticker import PercentFormatter
 from pydantic import BaseModel
+from tqdm import tqdm
 
 from wordle.pick import Strategy, pick_best_word, pick_letter_freq, pick_min_remaining
 from wordle.solver import (
@@ -21,31 +22,56 @@ from wordle.solver import (
 
 logger = logging.getLogger(__name__)
 
+class _WorkerContext:
+    """
+    Class storing read-only data for each worker process.
+    """
+    # These will be set by the initializer
+    all_candidates: Optional[np.ndarray] = None
+    all_guesses: Optional[np.ndarray] = None
+    first_guess: Optional[np.ndarray] = None
+    strategy: Optional[Strategy] = None
 
-class RunStats(BaseModel):
-    """Holds the timing and statistical results of an evaluation run."""
+def _init_worker(
+    all_candidates: np.ndarray,
+    all_guesses: Optional[np.ndarray],
+    first_guess: np.ndarray,
+    strategy: Strategy,
+):
+    """
+    The 'initializer' function for the multiprocessing.Pool.
+    Runs ONCE per worker process.
+    """
+    _WorkerContext.all_candidates = all_candidates
+    _WorkerContext.all_guesses = all_guesses
+    _WorkerContext.first_guess = first_guess
+    _WorkerContext.strategy = strategy
 
-    first_guess_time_s: float
-    total_sim_time_s: float
-    avg_game_time_s: float
-    mean_guesses: float
-    variance_guesses: float
+def _solve_game_worker(true_word_arr: np.ndarray) -> Tuple[str, int, float]:
+    """
+    This is the function that does the actual work for a single task.
+    It takes ONE job (the true_word_arr) and pulls all the
+    shared data from the WorkerContext class.
 
+    Returns: (true_word_str, guess_count, game_time_seconds)
+    """
+    ctx = _WorkerContext
+    game_start_time = time.perf_counter()
 
-class EvalResult(BaseModel):
-    """Top-level model for all evaluation results."""
+    # Call the original _solve_game function
+    cost = _solve_game(
+        ctx.all_candidates,
+        ctx.all_guesses,
+        ctx.first_guess,
+        true_word_arr,
+        ctx.strategy,
+    )
 
-    strategy_name: str
-    n_candidates: int
-    n_guesses: int
-    words_hash: str
-    first_guess: str
-    stats: RunStats
-    distribution_counts: List[int]
-    guesses_per_word: Dict[str, int]
+    game_end_time = time.perf_counter()
+    game_time_s = game_end_time - game_start_time
+    true_word_str = to_str(true_word_arr)
 
-    def get_dir_name(self):
-        return f"{self.strategy_name}_{self.n_candidates}_{self.n_guesses}_{self.words_hash}"
+    return true_word_str, cost, game_time_s
 
 def _solve_game(
     all_candidates: np.ndarray,
@@ -77,6 +103,30 @@ def _solve_game(
     # The loop broke, meaning guess_arr == true_word_arr
     return n_guesses
 
+class RunStats(BaseModel):
+    """Holds the timing and statistical results of an evaluation run."""
+
+    first_guess_time_s: float
+    total_sim_time_s: float
+    avg_game_time_s: float
+    mean_guesses: float
+    variance_guesses: float
+
+class EvalResult(BaseModel):
+    """Top-level model for all evaluation results."""
+
+    strategy_name: str
+    n_candidates: int
+    n_guesses: int
+    words_hash: str
+    first_guess: str
+    stats: RunStats
+    distribution_counts: List[int]
+    guesses_per_word: Dict[str, int]
+
+    def get_dir_name(self):
+        return f"{self.strategy_name}_{self.n_candidates}_{self.n_guesses}_{self.words_hash}"
+
 
 def evaluate_strategy(
     candidates_arr: np.ndarray,
@@ -102,31 +152,19 @@ def evaluate_strategy(
     logger.info(f"First guess is {first_guess_str}. (Took {first_guess_time_s:.2f}s)")
 
     # Simulate all games using first guess
-    guesses_per_word: Dict[str, int] = {}
-    game_times_s = []
-
     logger.info(f"Starting simulation for {n_candidates} words...")
     total_sim_start_time = time.perf_counter()
 
-    for i in range(n_candidates):
-        true_word_arr = candidates_arr[i, :]
-        true_word_str = to_str(true_word_arr)
+    guesses_per_word: Dict[str, int] = {}
+    game_times_s = []
+    n_workers = mp.cpu_count()
+    init_args = (candidates_arr, guesses_arr, first_guess_arr, strategy)
 
-        game_start_time = time.perf_counter()
-        cost = _solve_game(
-            candidates_arr,
-            guesses_arr,
-            first_guess_arr,
-            true_word_arr,
-            strategy,
-        )
-        game_end_time = time.perf_counter()
-
-        guesses_per_word[true_word_str] = cost
-        game_times_s.append(game_end_time - game_start_time)
-
-        if (i + 1) % 100 == 0:
-            logger.info(f"  ...simulated {i + 1} / {n_candidates} words")
+    with mp.Pool(processes=n_workers, initializer=_init_worker, initargs=init_args) as pool:
+        results_iterator = pool.imap_unordered(_solve_game_worker, candidates_arr)
+        for (true_word_str, cost, game_time) in tqdm(results_iterator, total=n_candidates):
+            guesses_per_word[true_word_str] = cost
+            game_times_s.append(game_time)
 
     total_sim_end_time = time.perf_counter()
     total_sim_time_s = total_sim_end_time - total_sim_start_time
@@ -195,7 +233,6 @@ def save_results_json(results_data: EvalResult, output_file: Path):
     with open(output_file, "w") as f:
         f.write(results_data.model_dump_json(indent=2))
 
-
 def create_shareable_image(results_data: EvalResult, output_file: Path):
     """
     Creates a single sharable image file from the EvalResult model.
@@ -211,37 +248,26 @@ def create_shareable_image(results_data: EvalResult, output_file: Path):
     # Prep for bar plot
     max_guess = len(dist_counts_list) - 1
     x_values = np.arange(1, max_guess + 1)
-
-    # Get counts by slicing the list (skip index 0)
     y_counts = np.array(dist_counts_list[1:])
     y_freq = y_counts / n_candidates
 
     # Prep for table
-    table_data = []
-    # Loop from 1 up to max_guess
-    for n_guess in x_values:
-        # Get count from y_counts (which is already 1-indexed)
-        table_data.append([f"Guesses = {n_guess}", f"{y_counts[n_guess - 1]:,}"])
-
-    table_data.extend(
-        [
-            ["---", "---"],
-            ["Total Candidates", f"{n_candidates:,}"],
-            ["Total Guesses", f"{results_data.n_guesses:,}"],
-            ["Mean Guesses", f"{stats.mean_guesses:.4f}"],
-            ["Guess Variance", f"{stats.variance_guesses:.4f}"],
-            ["---", "---"],
-            ["First Guess Time", f"{stats.first_guess_time_s:.2f} s"],
-            ["Avg. GameTime", f"{stats.avg_game_time_s:.4f} s"],
-            ["Total Sim Time", f"{stats.total_sim_time_s:.2f} s"],
-        ]
-    )
+    table_data = [
+        ["Total Candidates", f"{n_candidates:,}"],
+        ["Total Guesses", f"{results_data.n_guesses:,}"],
+        ["Mean Guesses", f"{stats.mean_guesses:.4f}"],
+        ["Guess Variance", f"{stats.variance_guesses:.4f}"],
+        ["", ""],  # Empty row for clean spacing
+        ["First Guess Time", f"{stats.first_guess_time_s:.2f} s"],
+        ["Avg. GameTime", f"{stats.avg_game_time_s:.4f} s"],
+        ["Total Sim Time", f"{stats.total_sim_time_s:.2f} s"],
+    ]
 
     # Plotting
     fig = plt.figure(figsize=(14, 7), constrained_layout=True)
     gs = fig.add_gridspec(1, 2, width_ratios=[1.2, 1])
 
-    # 1. Bar Plot
+    # Create Bar Plot
     ax_plot = fig.add_subplot(gs[0, 0])
     colors = plt.cm.viridis(np.linspace(0.1, 0.9, len(x_values)))
     ax_plot.bar(x_values, y_freq, color=colors, edgecolor="black", zorder=2)
@@ -249,13 +275,19 @@ def create_shareable_image(results_data: EvalResult, output_file: Path):
     ax_plot.set_xlabel("Number of Guesses", fontsize=12)
     ax_plot.set_ylabel("Frequency", fontsize=12)
     ax_plot.set_xticks(x_values)
-    ax_plot.set_ylim(0, 1.0)
+    ax_plot.set_ylim(0, 1.05)
     ax_plot.yaxis.grid(True, linestyle="--", alpha=0.7, zorder=0)
     ax_plot.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
 
-    # 2. Table
+    # Add annotations on top of bars
+    for x, y, count in zip(x_values, y_freq, y_counts):
+        label = f"{count:,}\n({y * 100:.1f}%)"
+        ax_plot.text(x, y + 0.01, label, ha="center", va="bottom", fontsize=9, zorder=3)
+
+    # Create Table
     ax_table = fig.add_subplot(gs[0, 1])
     ax_table.axis("off")
+    ax_table.set_title("Run Statistics", fontsize=16, pad=20)
     table = ax_table.table(
         cellText=table_data,
         cellLoc="left",
@@ -265,18 +297,22 @@ def create_shareable_image(results_data: EvalResult, output_file: Path):
     table.auto_set_font_size(False)
     table.set_fontsize(12)
     table.scale(1, 1.8)
+
+    # Style Table
     for (row, col), cell in table.get_celld().items():
         cell.set_edgecolor("none")
-        if table_data[row][0] == "---":
-            cell.set_text_props(weight="bold")
-            cell.set_height(0.1)
-            cell.get_text().set_text(" " * 30)
-            cell.set_edgecolor("black")
+
+        # Handle the empty spacer row
+        if table_data[row][0] == "":
+            cell.set_text_props(ha="left")
+            cell.set_height(0.1)  # Make spacer row thin
+            cell.get_text().set_text("")
+        # Style the left column (labels)
         elif col == 0:
             cell.set_text_props(weight="bold", ha="right")
+        # Style the right column (values)
         else:
             cell.set_text_props(ha="left")
-    ax_table.set_title("Run Statistics", fontsize=16, pad=20)
 
     # Save Figure
     plt.savefig(output_file, dpi=150, bbox_inches="tight")
