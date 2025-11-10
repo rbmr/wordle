@@ -22,10 +22,10 @@ def pick_best_word(
     if n_candidates == 0:
         raise ValueError("Candidate array is empty")
     if n_candidates == 1:
-        logger.info("Only one word remaining, picking index 0.")
+        logger.debug("Only one word remaining, picking index 0.")
         return candidates[0, :]
     if n_candidates == 2:
-        logger.info("Only two words remaining, picking index 0.")
+        logger.debug("Only two words remaining, picking index 0.")
         return candidates[0, :]
     # If no separate guess list is provided, use the candidates.
     if guesses is None:
@@ -88,21 +88,15 @@ def pick_min_remaining(candidates: np.ndarray, guesses: np.ndarray) -> np.ndarra
 
         guess_arr = guesses[i, :]
 
-        # Call the new vectorized function
-        # This one call replaces the entire inner Python loop
+        # Get all responses for the guess, across all candidates
         all_resps = get_all_resp(candidates, candidates_idx, true_counts_all, guess_arr)
 
-        # Now we have an (N, k) array of responses. We need to
-        # find the counts of each unique response row.
-
-        # This is a NumPy trick to view rows as single, hashable items
-        # It's the C-level equivalent of `Counter(resp.tobytes() for resp in all_resps)`
-        # It's extremely fast.
+        # NumPy trick to view rows as single, hashable items
         void_view = np.ascontiguousarray(all_resps).view(
             np.dtype((np.void, k * all_resps.dtype.itemsize))
         )
 
-        # `np.unique` finds all unique rows and their counts
+        # Find the counts for each unique response row.
         _, counts = np.unique(void_view.ravel(), return_counts=True)
 
         # Calculate the score from the partition sizes (counts)

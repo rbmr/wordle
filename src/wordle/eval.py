@@ -182,17 +182,11 @@ def _hash_s1_array(arr: Optional[np.ndarray], hasher: hashlib._Hash):
 
 def get_words_hash(candidates_arr: np.ndarray, guesses_arr: Optional[np.ndarray]) -> str:
     """Creates a unique hash for the combination of two word lists."""
-    hasher: hashlib = hashlib.sha256()
+    hasher: hashlib._Hash = hashlib.sha256()
     _hash_s1_array(candidates_arr, hasher)
     hasher.update(b'---ARRAY_SEPARATOR---')
     _hash_s1_array(guesses_arr, hasher)
     return hasher.hexdigest()[:12]
-
-def get_dir_name(
-    strategy_name: str, n_candidates: int, n_guesses: int, words_hash: str
-) -> str:
-    return
-
 
 def save_results_json(results_data: EvalResult, output_file: Path):
     """Saves the Pydantic model to results.json."""
