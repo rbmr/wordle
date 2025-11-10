@@ -6,6 +6,7 @@ from typing import Dict, List
 
 import numpy as np
 from matplotlib import pyplot as plt
+from matplotlib.ticker import PercentFormatter
 from pydantic import BaseModel
 
 from wordle.pick import Strategy, pick_best_word, pick_letter_freq, pick_min_remaining
@@ -243,7 +244,7 @@ def create_shareable_image(results_data: EvalResult, output_file: Path):
     ax_plot.set_xticks(x_values)
     ax_plot.set_ylim(0, 1.0)
     ax_plot.yaxis.grid(True, linestyle="--", alpha=0.7, zorder=0)
-    ax_plot.set_yticklabels([f"{x:.0%}" for x in ax_plot.get_yticks()])
+    ax_plot.yaxis.set_major_formatter(PercentFormatter(xmax=1.0))
 
     # 2. Table
     ax_table = fig.add_subplot(gs[0, 1])
@@ -262,12 +263,12 @@ def create_shareable_image(results_data: EvalResult, output_file: Path):
         if table_data[row][0] == "---":
             cell.set_text_props(weight="bold")
             cell.set_height(0.1)
-            cell.set_text(" " * 30)
+            cell.get_text().set_text(" " * 30)
             cell.set_edgecolor("black")
         elif col == 0:
-            cell.set_text_props(weight="bold", ha="right", pad=5)
+            cell.set_text_props(weight="bold", ha="right")
         else:
-            cell.set_text_props(ha="left", pad=5)
+            cell.set_text_props(ha="left")
     ax_table.set_title("Run Statistics", fontsize=16, pad=20)
 
     # Save Figure
@@ -318,8 +319,8 @@ def main():
 
     # Define strategies
     strategies_to_run = [
-        pick_min_remaining,
         pick_letter_freq,
+        pick_min_remaining,
     ]
 
     # Evaluate each strategy
