@@ -5,9 +5,9 @@
   "words_hash": "ce871cd72b04",
   "first_guess": "RAISE",
   "stats": {
-    "first_guess_time_s": 1.5421617710017017,
-    "total_sim_time_s": 17.389465840999037,
-    "avg_game_time_s": 0.007426938678196539,
+    "first_guess_time_s": 1.7805715470021823,
+    "total_sim_time_s": 17.050394703001075,
+    "avg_game_time_s": 0.007282325725193517,
     "mean_guesses": 3.6376068376068376,
     "variance_guesses": 0.7421754693549565
   },

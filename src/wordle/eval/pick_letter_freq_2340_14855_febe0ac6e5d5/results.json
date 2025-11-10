@@ -5,9 +5,9 @@
   "words_hash": "febe0ac6e5d5",
   "first_guess": "OATER",
   "stats": {
-    "first_guess_time_s": 0.0023898910003481433,
-    "total_sim_time_s": 9.281381392000185,
-    "avg_game_time_s": 0.003962041916222208,
+    "first_guess_time_s": 0.0017169669954455458,
+    "total_sim_time_s": 9.171690868999576,
+    "avg_game_time_s": 0.0039156307287009995,
     "mean_guesses": 3.9764957264957266,
     "variance_guesses": 0.8528663525458396
   },

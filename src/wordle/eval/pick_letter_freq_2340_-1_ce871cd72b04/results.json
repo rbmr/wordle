@@ -5,9 +5,9 @@
   "words_hash": "ce871cd72b04",
   "first_guess": "ALERT",
   "stats": {
-    "first_guess_time_s": 0.00040392999653704464,
-    "total_sim_time_s": 2.846366599005705,
-    "avg_game_time_s": 0.0012135480376458967,
+    "first_guess_time_s": 0.0009544839995214716,
+    "total_sim_time_s": 2.9467323089993442,
+    "avg_game_time_s": 0.0012564176794489285,
     "mean_guesses": 3.6923076923076925,
     "variance_guesses": 0.848060486522025
   },
